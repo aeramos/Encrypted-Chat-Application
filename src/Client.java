@@ -6,24 +6,26 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.*;
 
 public class Client {
     enum OutputMode {
-        MSG, GET, CMD, SET, BYE, LST, PUB
+        MSG, GET, CMD, SET, BYE, LST, PUB, LOG
     }
 
     private final Socket socket;
     private final InputStream socketInput;
     private final OutputStream socketOutput;
-    private final Map<Byte, PublicKey> publicKeys = new HashMap<>();
-    private byte id = 0;
-    private OutputMode mode = OutputMode.SET;
-    private final Scanner scanner = new Scanner(System.in);
-    private final KeyPair keyPair;
+    private final Map<Byte, PublicKey> publicKeys;
+    private byte id;
+    private OutputMode mode;
+    private final Scanner scanner;
+    private KeyPair keyPair;
 
-    public static void main(String... args) throws IOException {
+    public static void main(String... args) throws IOException, NoSuchAlgorithmException, InvalidKeySpecException, SignatureException, InvalidKeyException {
         Socket socket;
         try {
             socket = new Socket("localhost", 1155);
@@ -42,19 +44,19 @@ public class Client {
         client.run();
     }
 
-    public Client(Socket socket) throws NoSuchAlgorithmException, IOException {
+    public Client(Socket socket) throws IOException {
         this.socket = socket;
         this.socketInput = socket.getInputStream();
         this.socketOutput = socket.getOutputStream();
-        System.out.println("Connected to server.\nEnter \\quit to disconnect at any time.");
-
-        KeyPairGenerator generator;
-        generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(4096);
-        this.keyPair = generator.generateKeyPair();
+        this.publicKeys = new HashMap<>();
+        this.id = -1;
+        this.mode = OutputMode.LOG;
+        this.scanner = new Scanner(System.in);
     }
 
-    public void run() throws IOException {
+    public void run() throws IOException, NoSuchAlgorithmException, InvalidKeySpecException, SignatureException, InvalidKeyException {
+        System.out.println("Connected to server.\nEnter \\quit to disconnect at any time.");
+
         String input;
         byte[] output;
         while (this.socket.isConnected()) {
@@ -80,6 +82,57 @@ public class Client {
                             }
                         }
                     break;
+                case LOG:
+                    System.out.println("Username: ");
+                    String username = scanner.nextLine();
+                    if (modeSwitched(username)) {
+                        continue;
+                    }
+                    if (username.length() > 16 || username.length() == 0) {
+                        System.out.println("Invalid length. Please try again.");
+                    } else if (username.startsWith("\\")) {
+                        System.out.println("Username can not start with \\. Please try again");
+                    } else {
+                        log(username);
+
+                        System.out.println("Password: ");
+                        input = scanner.nextLine();
+                        MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+                        SecretKeySpec aesKey = new SecretKeySpec(sha256.digest(input.getBytes(StandardCharsets.US_ASCII)), "AES");
+
+                        output = this.socketInput.readNBytes(4);
+                        if (output[3] == 'Y') {
+                            this.id = this.socketInput.readNBytes(1)[0];
+                            byte[] publicKey = this.socketInput.readNBytes(550);
+                            byte[] privateKey = this.socketInput.readNBytes(2384);
+                            setKeyPair(publicKey, decryptAES(privateKey, aesKey));
+                            this.mode = OutputMode.CMD;
+
+                            output = this.socketInput.readNBytes(8);
+                            byte[] signedTimestamp = signRSA(output, this.keyPair.getPrivate());
+                            output = new byte[3 + 1 + signedTimestamp.length];
+                            output[0] = 'L';
+                            output[1] = 'O';
+                            output[2] = 'G';
+                            output[3] = 'B';
+                            System.arraycopy(signedTimestamp, 0, output, 4, signedTimestamp.length);
+                            this.socketOutput.write(output);
+                            if (this.socketInput.readNBytes(4)[3] == 'S') {
+                                System.out.println("Logged in successfully! You can now send and receive encrypted messages.");
+                            }
+                        } else {
+                            System.out.println("No information found for this username.");
+                            System.out.println("Would you like to make an account (Y) or try again (N)?");
+                            input = scanner.nextLine();
+                            if (input.equals("Y")) {
+                                reg(username, aesKey);
+                                output = this.socketInput.readNBytes(4);
+                                this.id = output[3];
+                                this.mode = OutputMode.CMD;
+                            }
+                        }
+                    }
+                    break;
                 case CMD:
                     System.out.println("Please select a command: \\GET, \\LST, \\MSG, \\PUB, \\SET, or \\QUIT");
                     input = scanner.nextLine();
@@ -96,9 +149,9 @@ public class Client {
                         output = this.socketInput.readNBytes(len);
                         for (int i = 0; i < output.length / 17; i++) {
                             System.out.print("(" + output[i * 17] + ") ");
-                            byte[] username = new byte[16];
-                            System.arraycopy(output, i * 17 + 1, username, 0, 16);
-                            for (final byte letter : username) {
+                            byte[] usrName = new byte[16];
+                            System.arraycopy(output, i * 17 + 1, usrName, 0, 16);
+                            for (final byte letter : usrName) {
                                 if (letter != 0) {
                                     System.out.print((char)letter);
                                 }
@@ -168,6 +221,12 @@ public class Client {
         System.out.println("Disconnected from server. Shutting down.");
     }
 
+    private void setKeyPair(byte[] publicKeyBytes, byte[] privateKeyBytes) throws NoSuchAlgorithmException, InvalidKeySpecException {
+        PublicKey publickey = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(publicKeyBytes));
+        PrivateKey privatekey = KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(privateKeyBytes));
+        this.keyPair = new KeyPair(publickey, privatekey);
+    }
+
     private String getMessage(byte[] encryptedMessage) {
         return decodeMsg(encryptedMessage, this.keyPair.getPrivate());
     }
@@ -227,6 +286,32 @@ public class Client {
         socketOutput.write(new byte[] {'L', 'S', 'T'});
     }
 
+    private void reg(String username, SecretKey aesKey) throws NoSuchAlgorithmException, IOException {
+        KeyPairGenerator generator;
+        generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(4096);
+        this.keyPair = generator.generateKeyPair();
+        byte[] encryptedPrivate = encryptAES(keyPair.getPrivate().getEncoded(), aesKey);
+        byte[] output = new byte[3 + 16 + 550 + encryptedPrivate.length];
+        output[0] = 'R';
+        output[1] = 'E';
+        output[2] = 'G';
+        System.arraycopy(username.getBytes(StandardCharsets.US_ASCII), 0, output, 3, username.length());
+        System.arraycopy(this.keyPair.getPublic().getEncoded(), 0, output, 3 + 16, 550);
+        System.arraycopy(encryptedPrivate, 0, output, 3 + 16 + 550, encryptedPrivate.length);
+        socketOutput.write(output);
+    }
+
+    private void log(String username) throws IOException {
+        byte[] output = new byte[4 + 16];
+        output[0] = 'L';
+        output[1] = 'O';
+        output[2] = 'G';
+        output[3] = 'A';
+        System.arraycopy(username.getBytes(StandardCharsets.US_ASCII), 0, output, 4, username.length());
+        socketOutput.write(output);
+    }
+
     private void set(String username) throws IOException {
         byte[] output = new byte[3 + 16 + 550];
         output[0] = 'S';
@@ -283,6 +368,41 @@ public class Client {
             byte[] encryptedMessage = new byte[msg.length - 512];
             System.arraycopy(msg, 512, encryptedMessage, 0, msg.length - 512);
             message = new String(cipher.doFinal(encryptedMessage), StandardCharsets.US_ASCII);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+        return message;
+    }
+
+    private static byte[] signRSA(byte[] input, PrivateKey privateKey) throws NoSuchAlgorithmException, InvalidKeyException, SignatureException {
+        Signature signature = Signature.getInstance("SHA256withRSA");
+        signature.initSign(privateKey);
+        signature.update(input);
+        return signature.sign();
+    }
+
+    private static byte[] encryptAES(byte[] msg, SecretKey key) {
+        Cipher cipher;
+        byte[] message;
+        try {
+            cipher = Cipher.getInstance("AES");
+            cipher.init(Cipher.ENCRYPT_MODE, key);
+            message = cipher.doFinal(msg);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+        return message;
+    }
+
+    private static byte[] decryptAES(byte[] msg, SecretKey key) {
+        Cipher cipher;
+        byte[] message;
+        try {
+            cipher = Cipher.getInstance("AES");
+            cipher.init(Cipher.DECRYPT_MODE, key);
+            message = cipher.doFinal(msg);
         } catch (Exception e) {
             e.printStackTrace();
             return null;

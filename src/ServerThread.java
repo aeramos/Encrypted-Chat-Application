@@ -1,9 +1,10 @@
 import java.io.*;
+import java.math.BigInteger;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.security.KeyFactory;
-import java.security.PublicKey;
+import java.security.*;
 import java.security.spec.X509EncodedKeySpec;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -13,17 +14,31 @@ public class ServerThread implements Runnable {
     private final OutputStream socketOutput;
     private final List<String> usernames;
     private final List<PublicKey> publicKeys;
+    private final List<byte[]> privateKeys;
     private final List<Message> messages;
 
+    byte[] loginTimestamp = null;
     private byte id = -1;
 
-    public ServerThread(Socket socket, List<String> usernames, List<PublicKey> publicKeys, List<Message> messages) throws IOException {
+    public ServerThread(Socket socket, List<String> usernames, List<PublicKey> publicKeys, List<byte[]> privateKeys, List<Message> messages) throws IOException {
         this.socket = socket;
         this.socketInput = socket.getInputStream();
         this.socketOutput = socket.getOutputStream();
         this.usernames = usernames;
         this.publicKeys = publicKeys;
+        this.privateKeys = privateKeys;
         this.messages = messages;
+    }
+
+    private static String byteToUsername(byte[] bytes) {
+        String username = "";
+        for (int i = 0; i < 16; i++) {
+            if (bytes[i] == 0) {
+                break;
+            }
+            username += (char)bytes[i];
+        }
+        return username;
     }
 
     @Override
@@ -36,13 +51,7 @@ public class ServerThread implements Runnable {
                 switch (command) {
                     case "SET":
                         input = socketInput.readNBytes(16);
-                        String username = "";
-                        for (int i = 0; i < 16; i++) {
-                            if (input[i] == 0) {
-                                break;
-                            }
-                            username += (char)input[i];
-                        }
+                        String username = byteToUsername(input);
                         byte[] key = socketInput.readNBytes(550);
                         PublicKey publicKey = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(key));
                         int index = publicKeys.indexOf(publicKey);
@@ -55,6 +64,46 @@ public class ServerThread implements Runnable {
                         }
                         this.id = (byte)index;
                         socketOutput.write(new byte[] {'S', 'E', 'T', (byte)index});
+                        break;
+                    case "LOG":
+                        input = socketInput.readNBytes(1);
+                        if (input[0] == 'A') {
+                            input = socketInput.readNBytes(16);
+                            username = byteToUsername(input);
+                            index = usernames.indexOf(username);
+                            if (index != -1) { // 'Y'
+                                this.id = (byte)index;
+                                input = new byte[3 + 2 + 550 + 2384 + 8];
+                                input[0] = 'L';
+                                input[1] = 'O';
+                                input[2] = 'G';
+                                input[3] = 'Y';
+                                input[4] = (byte)index;
+                                System.arraycopy(publicKeys.get(index).getEncoded(), 0, input, 5, 550);
+                                System.arraycopy(privateKeys.get(index), 0, input, 5 + 550, 2384);
+                                BigInteger time = BigInteger.valueOf(Instant.now().getEpochSecond());
+                                this.loginTimestamp = time.toByteArray();
+                                System.arraycopy(this.loginTimestamp, 0, input, 5 + 550 + 2384, this.loginTimestamp.length);
+                                socketOutput.write(input);
+                            } else { // 'N'
+                                socketOutput.write(new byte[]{'L', 'O', 'G', 'N'});
+                            }
+                        } else { // first byte is 'B'
+                            input = socketInput.readNBytes(512);
+                            if (verifySigRSA(loginTimestamp, input, this.publicKeys.get(this.id))) {
+                                this.loginTimestamp = new byte[0];
+                                socketOutput.write(new byte[]{'L', 'O', 'G', 'S'});
+                            } else {
+                                socketOutput.write(new byte[]{'L', 'O', 'G', 'F'});
+                            }
+                        }
+                        break;
+                    case "REG":
+                        this.id = (byte)this.usernames.size();
+                        usernames.add(byteToUsername(socketInput.readNBytes(16)));
+                        publicKeys.add(KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(socketInput.readNBytes(550))));
+                        privateKeys.add(socketInput.readNBytes(2384));
+                        socketOutput.write(new byte[]{'R', 'E', 'G', this.id});
                         break;
                     case "LST":
                         input = new byte[4 + (17 * usernames.size())];
@@ -121,5 +170,12 @@ public class ServerThread implements Runnable {
             }
         }
         System.out.println("Socket closed. Disconnecting from " + socket.getInetAddress() + ":" + socket.getPort());
+    }
+
+    public static boolean verifySigRSA(byte[] input, byte[] signature, PublicKey publicKey) throws NoSuchAlgorithmException, InvalidKeyException, SignatureException {
+        Signature signatureInstance = Signature.getInstance("SHA256withRSA");
+        signatureInstance.initVerify(publicKey);
+        signatureInstance.update(input);
+        return signatureInstance.verify(signature);
     }
 }
