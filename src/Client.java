@@ -13,16 +13,16 @@ import java.util.*;
 
 public class Client {
     enum OutputMode {
-        MSG, GET, CMD, SET, BYE, LST, PUB, LOG
+        MSG, GET, CMD, BYE, LST, PUB, LOG, NME
     }
 
     private final Socket socket;
     private final InputStream socketInput;
     private final OutputStream socketOutput;
     private final Map<Byte, PublicKey> publicKeys;
-    private byte id;
+    private byte id = 0;
     private OutputMode mode;
-    private final Scanner scanner;
+    private final Scanner scanner = new Scanner(System.in);
     private KeyPair keyPair;
 
     public static void main(String... args) throws IOException, NoSuchAlgorithmException, InvalidKeySpecException, SignatureException, InvalidKeyException {
@@ -49,38 +49,50 @@ public class Client {
         this.socketInput = socket.getInputStream();
         this.socketOutput = socket.getOutputStream();
         this.publicKeys = new HashMap<>();
-        this.id = -1;
         this.mode = OutputMode.LOG;
-        this.scanner = new Scanner(System.in);
+
+        System.out.println("Connected to server.\nEnter \\quit to disconnect at any time.");
+    }
+
+    /**
+     * @param username new username
+     * @return true if the name change was successful. false if someone else already uses that name
+     */
+    private boolean nme(String username) throws IOException {
+        byte[] bytes = new byte[3 + 16];
+        bytes[0] = 'N';
+        bytes[1] = 'M';
+        bytes[2] = 'E';
+        System.arraycopy(username.getBytes(StandardCharsets.US_ASCII), 0, bytes, 3, username.length());
+        socketOutput.write(bytes);
+        bytes = socketInput.readNBytes(4);
+        return bytes[3] == 'S';
     }
 
     public void run() throws IOException, NoSuchAlgorithmException, InvalidKeySpecException, SignatureException, InvalidKeyException {
-        System.out.println("Connected to server.\nEnter \\quit to disconnect at any time.");
-
         String input;
         byte[] output;
         while (this.socket.isConnected()) {
             switch (mode) {
-                case SET:
-                        System.out.println("Desired username (1-16 characters): ");
-                        input = scanner.nextLine();
-                        if (modeSwitched(input)) {
-                            continue;
-                        }
-                        if (input.length() > 16 || input.length() == 0) {
-                            System.out.println("Invalid length. Please try again.");
-                        } else if (input.startsWith("\\")) {
-                            System.out.println("Username can not start with \\. Please try again");
-                        } else {
-                            set(input);
-                            output = this.socketInput.readNBytes(4);
-                            if (output[0] == 'S') {
-                                this.id = output[3];
-                                this.mode = OutputMode.CMD;
-                            } else {
-                                System.out.println("Something went wrong. Please try again.");
-                            }
-                        }
+                case NME:
+                    System.out.println("Desired username (1-16 characters): ");
+                    input = scanner.nextLine();
+                    if (modeSwitched(input)) {
+                        continue;
+                    }
+                    if (input.length() > 16 || input.length() == 0) {
+                        System.out.println("Invalid length. Please try again.");
+                        continue;
+                    } else if (input.startsWith("\\")) {
+                        System.out.println("Username can not start with \\. Please try again");
+                        continue;
+                    }
+                    if (nme(input)) {
+                        System.out.println("Name change successful, you are now " + input);
+                    } else {
+                        System.out.println("Name change unsuccessful, someone else is already named " + input);
+                    }
+                    this.mode = OutputMode.CMD;
                     break;
                 case LOG:
                     System.out.println("Username: ");
@@ -103,9 +115,9 @@ public class Client {
                         output = this.socketInput.readNBytes(4);
                         if (output[3] == 'Y') {
                             this.id = this.socketInput.readNBytes(1)[0];
-                            byte[] publicKey = this.socketInput.readNBytes(550);
-                            byte[] privateKey = this.socketInput.readNBytes(2384);
-                            setKeyPair(publicKey, decryptAES(privateKey, aesKey));
+                            byte[] publickey = this.socketInput.readNBytes(550);
+                            byte[] privatekey = this.socketInput.readNBytes(2384);
+                            setKeyPair(publickey, decryptAES(privatekey, aesKey));
                             this.mode = OutputMode.CMD;
 
                             output = this.socketInput.readNBytes(8);
@@ -134,7 +146,7 @@ public class Client {
                     }
                     break;
                 case CMD:
-                    System.out.println("Please select a command: \\GET, \\LST, \\MSG, \\PUB, \\SET, or \\QUIT");
+                    System.out.println("Please select a command: \\GET, \\LST, \\MSG, \\PUB, \\NME, or \\QUIT");
                     input = scanner.nextLine();
                     if (!modeSwitched(input)) {
                         System.out.println("Invalid input. Please try again.");
@@ -221,9 +233,9 @@ public class Client {
         System.out.println("Disconnected from server. Shutting down.");
     }
 
-    private void setKeyPair(byte[] publicKeyBytes, byte[] privateKeyBytes) throws NoSuchAlgorithmException, InvalidKeySpecException {
-        PublicKey publickey = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(publicKeyBytes));
-        PrivateKey privatekey = KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(privateKeyBytes));
+    private void setKeyPair(byte[] publickeyBytes, byte[] privatekeyBytes) throws NoSuchAlgorithmException, InvalidKeySpecException {
+        PublicKey publickey = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(publickeyBytes));
+        PrivateKey privatekey = KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(privatekeyBytes));
         this.keyPair = new KeyPair(publickey, privatekey);
     }
 
@@ -312,16 +324,6 @@ public class Client {
         socketOutput.write(output);
     }
 
-    private void set(String username) throws IOException {
-        byte[] output = new byte[3 + 16 + 550];
-        output[0] = 'S';
-        output[1] = 'E';
-        output[2] = 'T';
-        System.arraycopy(username.getBytes(StandardCharsets.US_ASCII), 0, output, 3, username.length());
-        System.arraycopy(this.keyPair.getPublic().getEncoded(), 0, output, 3 + 16, 550);
-        socketOutput.write(output);
-    }
-
     private boolean modeSwitched(String input) {
         if (input.equals("\\QUIT")) {
             mode = OutputMode.BYE;
@@ -340,8 +342,8 @@ public class Client {
             case "\\PUB":
                 mode = OutputMode.PUB;
                 break;
-            case "\\SET":
-                mode = OutputMode.SET;
+            case "\\NME":
+                mode = OutputMode.NME;
                 break;
             default:
                 return false;

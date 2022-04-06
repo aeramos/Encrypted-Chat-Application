@@ -12,7 +12,7 @@ public class Server {
     private static final List<byte[]> privateKeys = Collections.synchronizedList(new LinkedList<>());
     private static final List<Message> messages = Collections.synchronizedList(new LinkedList<>());
 
-    public static void main(String... args) throws IOException {
+    public static void main(String[] args) throws IOException {
         ExecutorService threadPool = Executors.newCachedThreadPool();
 
         ServerSocket serverSocket;
