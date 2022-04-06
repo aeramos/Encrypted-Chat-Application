@@ -50,6 +50,16 @@ public class ServerThread implements Runnable {
                 socketInput.readNBytes(input, 0, 3);
                 String command = "" + (char)(input[0]) + (char)(input[1]) + (char)(input[2]);
                 switch (command) {
+                    case "PWD":
+                        byte[] newPrivate = socketInput.readNBytes(2384);
+                        byte[] signature = socketInput.readNBytes(512);
+                        if (verifySigRSA(newPrivate, signature, this.publicKeys.get(this.id))) {
+                            this.privateKeys.set(this.id, newPrivate);
+                            socketOutput.write(new byte[] {'P', 'W', 'D', 'S'});
+                        } else {
+                            socketOutput.write(new byte[] {'P', 'W', 'D', 'F'});
+                        }
+                        break;
                     case "NME":
                         input = socketInput.readNBytes(16);
                         String username = byteToUsername(input);

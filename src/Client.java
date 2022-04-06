@@ -13,7 +13,7 @@ import java.util.*;
 
 public class Client {
     enum OutputMode {
-        MSG, GET, CMD, BYE, LST, PUB, LOG, NME
+        MSG, GET, CMD, BYE, LST, PUB, LOG, PWD, NME
     }
 
     private final Socket socket;
@@ -69,11 +69,41 @@ public class Client {
         return bytes[3] == 'S';
     }
 
+    private boolean pwd(String password) throws NoSuchAlgorithmException, SignatureException, InvalidKeyException, IOException {
+        MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+        SecretKeySpec aesKey = new SecretKeySpec(sha256.digest(password.getBytes(StandardCharsets.US_ASCII)), "AES");
+
+        byte[] newPrivate = encryptAES(this.keyPair.getPrivate().getEncoded(), aesKey);
+        byte[] signature = signRSA(newPrivate, this.keyPair.getPrivate());
+        byte[] output = new byte[3 + newPrivate.length + signature.length];
+        output[0] = 'P';
+        output[1] = 'W';
+        output[2] = 'D';
+        System.arraycopy(newPrivate, 0, output, 3, newPrivate.length);
+        System.arraycopy(signature, 0, output, 3 + newPrivate.length, signature.length);
+        socketOutput.write(output);
+
+        return socketInput.readNBytes(4)[3] == 'S';
+    }
+
     public void run() throws IOException, NoSuchAlgorithmException, InvalidKeySpecException, SignatureException, InvalidKeyException {
         String input;
         byte[] output;
         while (this.socket.isConnected()) {
             switch (mode) {
+                case PWD:
+                    System.out.println("Desired password: " );
+                    input = scanner.nextLine();
+                    if (modeSwitched(input)) {
+                        continue;
+                    }
+                    if (pwd(input)) {
+                        System.out.println("Password changed successfully.");
+                    } else {
+                        System.out.println("Unexpected error. Your password was not changed.");
+                    }
+                    this.mode = OutputMode.CMD;
+                    break;
                 case NME:
                     System.out.println("Desired username (1-16 characters): ");
                     input = scanner.nextLine();
@@ -344,6 +374,9 @@ public class Client {
                 break;
             case "\\NME":
                 mode = OutputMode.NME;
+                break;
+            case "\\PWD":
+                mode = OutputMode.PWD;
                 break;
             default:
                 return false;
