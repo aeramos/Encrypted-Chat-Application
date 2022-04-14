@@ -137,18 +137,20 @@ public class ServerThread implements Runnable {
                         break;
                     case "MSG":
                         byte recipientID = socketInput.readNBytes(1)[0];
-                        this.messages.add(new Message(this.id, recipientID, socketInput.readNBytes(512 + (16 * socketInput.readNBytes(1)[0]))));
+                        this.messages.add(new Message(this.id, recipientID, socketInput.readNBytes(512 + 512 + (16 * socketInput.readNBytes(1)[0]))));
                         break;
                     case "GET":
                         byte authorID = socketInput.readNBytes(1)[0];
                         int requestedNumber = socketInput.readNBytes(1)[0];
-                        int responseLength = 3 + 1 + 1;
+                        // GET + number of messages
+                        int responseLength = 3 + 1;
                         ArrayList<Message> requestedMessages = new ArrayList<>(requestedNumber);
                         for (int i = this.messages.size() - 1; i >= 0; i--) {
                             Message message = this.messages.get(i);
-                            if (message.authorID == authorID && message.recipientID == this.id) {
+                            if ((message.authorID == authorID && message.recipientID == this.id) || (message.authorID == this.id && message.recipientID == authorID)) {
                                 requestedMessages.add(message);
-                                responseLength += 1 + message.message.length;
+                                // authorID + numberofblocks + (2 keys + blocks)
+                                responseLength += 2 + message.message.length;
                             }
                             if (requestedMessages.size() == requestedNumber) {
                                 break;
@@ -158,13 +160,13 @@ public class ServerThread implements Runnable {
                         input[0] = 'G';
                         input[1] = 'E';
                         input[2] = 'T';
-                        input[3] = authorID;
-                        input[4] = (byte)requestedMessages.size();
-                        int pointer = 5;
+                        input[3] = (byte)requestedMessages.size();
+                        int pointer = 4;
                         for (int i = requestedMessages.size() - 1; i >= 0; i--) {
                             Message message = requestedMessages.get(i);
                             byte[] msg = message.message;
-                            input[pointer++] = (byte)((msg.length - 512) / 16);
+                            input[pointer++] = message.authorID;
+                            input[pointer++] = (byte)((msg.length - (512 * 2)) / 16);
                             System.arraycopy(msg, 0, input, pointer, msg.length);
                             pointer += msg.length;
                         }

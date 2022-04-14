@@ -246,10 +246,12 @@ public class Client {
                     id = Byte.parseByte(input);
                     System.out.println("Getting last 10 messages.");
                     get(id, (byte)10);
-                    int numberOfMessages = socketInput.readNBytes(5)[4];
+                    int numberOfMessages = socketInput.readNBytes(4)[3];
                     for (int i = 0; i < numberOfMessages; i++) {
-                        byte[] message = socketInput.readNBytes(512 + socketInput.readNBytes(1)[0] * 16);
-                        System.out.println(getMessage(message));
+                        byte authorID = socketInput.readNBytes(1)[0];
+                        // for each message: authorid + numberofblocks + authorkey + recipientkey + aesblocks
+                        byte[] message = socketInput.readNBytes(512 + 512 + socketInput.readNBytes(1)[0] * 16);
+                        System.out.println(getMessage(authorID, message));
                     }
                     mode = OutputMode.CMD;
                     break;
@@ -269,23 +271,8 @@ public class Client {
         this.keyPair = new KeyPair(publickey, privatekey);
     }
 
-    private String getMessage(byte[] encryptedMessage) {
-        return decodeMsg(encryptedMessage, this.keyPair.getPrivate());
-    }
-
-    private String[] getMessages(byte[] data) {
-        byte numberOfMessages = data[3];
-        String[] messages = new String[numberOfMessages];
-        int startPoint = 4;
-        for (int i = 0; i < numberOfMessages; i++) {
-            byte numberOfAesBlocks = data[startPoint];
-            byte[] encryptedMessage = new byte[512 + (numberOfAesBlocks * 16)];
-            System.arraycopy(data, startPoint + 1, encryptedMessage, 0, 512 + (numberOfAesBlocks * 16));
-
-            messages[i] = decodeMsg(encryptedMessage, this.keyPair.getPrivate());
-            startPoint += 512 + (numberOfAesBlocks * 16) + 1;
-        }
-        return messages;
+    private String getMessage(byte authorID, byte[] encryptedMessage) {
+        return decodeMsg(authorID, encryptedMessage, this.keyPair.getPrivate());
     }
 
     private void get(byte authorID, byte numberToGet) throws IOException {
@@ -294,13 +281,17 @@ public class Client {
 
     private void msg(byte recipientID, String message) throws IOException {
         Cipher cipher;
-        byte[] encryptedKey;
+        byte[] recipientKey;
+        byte[] authorKey;
         SecretKey aesKey = generateKey();
         byte[] encryptedMessage;
         try {
             cipher = Cipher.getInstance("RSA");
             cipher.init(Cipher.ENCRYPT_MODE, publicKeys.get(recipientID));
-            encryptedKey = cipher.doFinal(aesKey.getEncoded());
+            recipientKey = cipher.doFinal(aesKey.getEncoded());
+
+            cipher.init(Cipher.ENCRYPT_MODE, this.keyPair.getPublic());
+            authorKey = cipher.doFinal(aesKey.getEncoded());
 
             cipher = Cipher.getInstance("AES");
             cipher.init(Cipher.ENCRYPT_MODE, aesKey);
@@ -309,14 +300,15 @@ public class Client {
             e.printStackTrace();
             return;
         }
-        byte[] output = new byte[3 + 1 + 1 + encryptedKey.length + encryptedMessage.length];
+        byte[] output = new byte[3 + 1 + 1 + recipientKey.length + authorKey.length + encryptedMessage.length];
         output[0] = 'M';
         output[1] = 'S';
         output[2] = 'G';
         output[3] = recipientID;
         output[4] = (byte)(encryptedMessage.length / 16);
-        System.arraycopy(encryptedKey, 0, output, 5, encryptedKey.length);
-        System.arraycopy(encryptedMessage, 0, output, 5 + encryptedKey.length, encryptedMessage.length);
+        System.arraycopy(recipientKey, 0, output, 5, recipientKey.length);
+        System.arraycopy(authorKey, 0, output, 5 + recipientKey.length, authorKey.length);
+        System.arraycopy(encryptedMessage, 0, output, 5 + recipientKey.length + authorKey.length, encryptedMessage.length);
         socketOutput.write(output);
     }
 
@@ -388,26 +380,34 @@ public class Client {
         return Base64.getEncoder().encodeToString(data);
     }
 
-    private static String decodeMsg(byte[] msg, PrivateKey key) {
+    private String decodeMsg(byte authorID, byte[] msg, PrivateKey key) {
         Cipher cipher;
         String message;
         try {
             cipher = Cipher.getInstance("RSA");
             cipher.init(Cipher.DECRYPT_MODE, key);
             byte[] encryptedKey = new byte[512];
-            System.arraycopy(msg, 0, encryptedKey, 0, 512);
+            if (authorID != this.id) {
+                System.arraycopy(msg, 0, encryptedKey, 0, 512);
+            } else {
+                System.arraycopy(msg, 512, encryptedKey, 0, 512);
+            }
             byte[] aesKey = cipher.doFinal(encryptedKey);
 
             cipher = Cipher.getInstance("AES");
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(aesKey, "AES"));
-            byte[] encryptedMessage = new byte[msg.length - 512];
-            System.arraycopy(msg, 512, encryptedMessage, 0, msg.length - 512);
+            byte[] encryptedMessage = new byte[msg.length - 1024];
+            System.arraycopy(msg, 1024, encryptedMessage, 0, msg.length - 1024);
             message = new String(cipher.doFinal(encryptedMessage), StandardCharsets.US_ASCII);
         } catch (Exception e) {
             e.printStackTrace();
             return null;
         }
-        return message;
+        if (authorID == this.id) {
+            return "You: " + message;
+        } else {
+            return "Them: " + message;
+        }
     }
 
     private static byte[] signRSA(byte[] input, PrivateKey privateKey) throws NoSuchAlgorithmException, InvalidKeyException, SignatureException {
