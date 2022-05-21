@@ -287,11 +287,11 @@ public class Client {
         byte[] encryptedMessage;
         try {
             cipher = Cipher.getInstance("RSA");
-            cipher.init(Cipher.ENCRYPT_MODE, publicKeys.get(recipientID));
-            recipientKey = cipher.doFinal(aesKey.getEncoded());
-
             cipher.init(Cipher.ENCRYPT_MODE, this.keyPair.getPublic());
             authorKey = cipher.doFinal(aesKey.getEncoded());
+
+            cipher.init(Cipher.ENCRYPT_MODE, publicKeys.get(recipientID));
+            recipientKey = cipher.doFinal(aesKey.getEncoded());
 
             cipher = Cipher.getInstance("AES");
             cipher.init(Cipher.ENCRYPT_MODE, aesKey);
@@ -306,9 +306,9 @@ public class Client {
         output[2] = 'G';
         output[3] = recipientID;
         output[4] = (byte)(encryptedMessage.length / 16);
-        System.arraycopy(recipientKey, 0, output, 5, recipientKey.length);
-        System.arraycopy(authorKey, 0, output, 5 + recipientKey.length, authorKey.length);
-        System.arraycopy(encryptedMessage, 0, output, 5 + recipientKey.length + authorKey.length, encryptedMessage.length);
+        System.arraycopy(authorKey, 0, output, 5, authorKey.length);
+        System.arraycopy(recipientKey, 0, output, 5 + authorKey.length, recipientKey.length);
+        System.arraycopy(encryptedMessage, 0, output, 5 + authorKey.length + recipientKey.length, encryptedMessage.length);
         socketOutput.write(output);
     }
 
@@ -387,7 +387,7 @@ public class Client {
             cipher = Cipher.getInstance("RSA");
             cipher.init(Cipher.DECRYPT_MODE, key);
             byte[] encryptedKey = new byte[512];
-            if (authorID != this.id) {
+            if (authorID == this.id) {
                 System.arraycopy(msg, 0, encryptedKey, 0, 512);
             } else {
                 System.arraycopy(msg, 512, encryptedKey, 0, 512);
