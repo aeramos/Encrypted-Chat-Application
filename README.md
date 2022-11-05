@@ -3,18 +3,38 @@
 
 This is networking code made for a group project that I wrote (mostly) in a weekend. I decided
 to release it because I enjoyed working on it and it was the first networked program I ever made
-with a protocol. I am aware that it has *many* problems. Many of these were not fixed because my
-goal was to quickly write simple code that worked for the school project. Some of these were not
-fixed because I didn't realize it until later.
+with a protocol. I am aware that it has *many* problems. Most of these were not fixed because our
+goal was to quickly write simple code that worked for the school project. Please note that there was
+more of the project than this. This repository only includes the code that I (Alejandro Ramos) wrote
+and contributed, which was mainly the protocol, the client (not including the GUI), and the server.
 
-In the future I may write a proper list of flaws in the system. One of the larger flaws is that the
-system requires a lot of data to be transferred, causing a lot of overhead for instant messaging.
-There are also problems with this implementation, especially that the client has problems when run
-with multiple threads because it only listens for the response to the last command it sends. In our
-tests with a graphical UI we had to be careful not to perform actions too quickly, or else the
-listening could become out of sync with the sending and the client would fail.
+## Flaws in the System
+There are a number of flaws both in the protocol and in the implementation. I'll briefly outline a
+few of the larger ones. We knew about most of these while we were working on the project, but we
+didn't fix them due to time constraints as this was done for a school project.
 
-## Networking protocol
+1. The users' RSA private keys are stored on the server. They are stored encrypted but they are
+still stored on the server. This is unideal because while the private keys are encrypted, they are
+only as strong as the user's password. This means that if someone were to find out a users password,
+they can get the private keys and read all messages the user has sent and recieved. This problem
+multiplies when the server is storing every user's private key because an attacker can attempt to
+guess multiple users' passwords at once.
+
+2. The system requires an excessive amount of data to be transferred with each message. Even the
+smallest messages require the client to send 1042 bytes of data to the server. 1024 bytes are just
+to send the new RSA encrypted AES keys for each message. In fact, the length of the full encrypted
+message can be over double the length of the plaintext message until the message reaches 1041 bytes.
+Most instant messages are well below 1KB, and the encryption protocol should take this into
+consideration and try to optimize for smaller messages while still changing the message encryption
+key frequently.
+
+3. The client is not implemented well. It was done quickly and in such a way that makes
+multithreading very difficult to do. Most of the methods in the client will send a request, and then
+wait for the next response the server sends, not checking if it is the correct response or not.
+For example when we tested the multithreaded client GUI, if a user tried to do things too fast (like
+click on multiple message tabs or send messages), it would break.
+
+## Networking Protocol
 I made a simple and *very* fragile protocol for messages between the clients and the server. We
 realized that we would need a protocol because this is not a simple chat server, where every network
 message is a chat message and the server can just pass each message to the other party without
@@ -23,7 +43,10 @@ Commands are listed in rough chronological order, based on when a client would l
 command.
 
 ### The Commands
-Note that numbers in (parentheses) represent the number of bytes for each part of the message
+Note that numbers in (parentheses) represent the number of bytes for each part of the message. Also
+note that each request/response message includes its type in the first 3 characters of each message.
+For example, an NME request consists of the letters 'N', 'M', and 'E', then 16 letters for the user's
+desired name.
 
 | Request                                                                                              | Response                                                                                                                        |
 |------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------|
